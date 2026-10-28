@@ -62,7 +62,8 @@ on:
         required: true
 
 env:
-  DEVELOCITY_URL: https://ge.solutions-team.gradle.com
+  # ge.solutions-team.gradle.com 308-redirects here; the AC action does not follow redirects.
+  DEVELOCITY_URL: https://solutions.develocity.cloud
   DEPS_CACHE_KEY: deps-wrapper-${{ github.run_id }}
 
 jobs:
