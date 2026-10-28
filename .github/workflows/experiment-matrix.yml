@@ -57,6 +57,11 @@ on:
         type: string
         required: false
         default: ""
+      scenarios:
+        description: 'JSON list of modes to run, subset of ["no_cc","cc","ip"]'
+        type: string
+        required: false
+        default: '["no_cc","cc","ip"]'
     secrets:
       DEVELOCITY_ACCESS_KEY:
         required: true
@@ -141,7 +146,7 @@ jobs:
       fail-fast: false
       max-parallel: ${{ fromJson(inputs.max_parallel) }}
       matrix:
-        scenario: [no_cc, cc, ip]
+        scenario: ${{ fromJson(inputs.scenarios) }}
         iteration: ${{ fromJson(needs.iterations.outputs.iterations) }}
     runs-on: ubuntu-latest
     steps:

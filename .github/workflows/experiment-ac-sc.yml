@@ -26,6 +26,10 @@ on:
         description: "Extra Gradle arguments"
         required: false
         default: ""
+      scenarios:
+        description: 'Modes to run, JSON list from ["no_cc","cc","ip"]'
+        required: true
+        default: '["no_cc","cc","ip"]'
 
 run-name: "ac_sc · ${{ inputs.experiment_id }} · ${{ inputs.task }} · ${{ inputs.iterations }} iterations"
 
@@ -39,5 +43,6 @@ jobs:
       max_parallel: ${{ inputs.max_parallel }}
       experiment_id: ${{ inputs.experiment_id }}
       extra_args: ${{ inputs.extra_args }}
+      scenarios: ${{ inputs.scenarios }}
     secrets:
       DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
