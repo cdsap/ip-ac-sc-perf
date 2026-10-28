@@ -18,9 +18,9 @@ name: Experiment matrix
 # Cache restore. The cc/ip scenarios therefore always store a fresh entry,
 # which is the cost we want to measure.
 #
-# AC/SC variant only: a seed job per scenario runs first and stores the cache
-# under a scenario-specific image name. Measured iterations restore it with
-# cache-read-only, so they never overwrite each other's entries.
+# AC/SC variant: no seed job. Each iteration restores and stores through the
+# Develocity Artifact Cache action itself, as it would on real CI, under a
+# scenario-specific image name.
 #
 # deps_cache variant only: like Telltale's "dependencies cache" mode, a single
 # seed job runs first and saves ~/.gradle/caches/modules-2 and
@@ -92,53 +92,6 @@ jobs:
             *) echo "mode must be ac_sc, no_ac_sc or deps_cache, got '${{ inputs.mode }}'" >&2; exit 1 ;;
           esac
 
-  seed:
-    name: "Seed ${{ matrix.scenario }}"
-    if: inputs.mode == 'ac_sc'
-    strategy:
-      fail-fast: false
-      matrix:
-        scenario: [no_cc, cc, ip]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # Convention plugins pin a Java 23 toolchain; the AC CLI needs JDK 21+.
-      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
-        with:
-          distribution: temurin
-          java-version: '23'
-
-      - name: Develocity Artifact Cache + Setup Cache
-        uses: gradle/develocity-artifact-cache-github-action@0d55463728b4cb8d76aab3399fcf261cf1fc4fe5 # v1.1.1
-        with:
-          develocity-url: ${{ env.DEVELOCITY_URL }}
-          develocity-access-key: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
-          image-names: ip-ac-sc-perf-${{ matrix.scenario }}
-          additional-cli-args: |
-            --autodetect=GRADLE
-
-      - name: Build
-        run: |
-          case '${{ matrix.scenario }}' in
-            no_cc) flags='--no-configuration-cache -Dorg.gradle.unsafe.isolated-projects=false' ;;
-            cc)    flags='--configuration-cache -Dorg.gradle.unsafe.isolated-projects=false' ;;
-            ip)    flags='-Dorg.gradle.unsafe.isolated-projects=true' ;;
-          esac
-          task_tag=$(echo "${{ inputs.task }}" | xargs | tr " " "_")
-          ./gradlew ${{ inputs.task }} $flags ${{ inputs.extra_args }} \
-            -Dscan.tag.seed \
-            -Dscan.tag.ip-ac-sc-perf \
-            -Dscan.tag.$task_tag \
-            -Dscan.tag.run_${{ github.run_id }} \
-            -Dscan.value.scenario=${{ matrix.scenario }}
-        env:
-          DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
-
-      # Keep the configuration cache entry out of the stored workspace image.
-      - name: Drop configuration cache entry
-        run: rm -rf .gradle/configuration-cache
-
   seed-deps:
     name: "Seed dependencies + wrapper"
     if: inputs.mode == 'deps_cache'
@@ -180,9 +133,9 @@ jobs:
 
   experiment:
     name: "${{ matrix.scenario }} · iteration ${{ matrix.iteration }}"
-    needs: [iterations, seed, seed-deps]
-    # At most one seed job runs per mode; run anyway, but not if it failed.
-    if: ${{ !cancelled() && needs.iterations.result == 'success' && needs.seed.result != 'failure' && needs.seed-deps.result != 'failure' }}
+    needs: [iterations, seed-deps]
+    # seed-deps only runs in deps_cache mode; run anyway, but not if it failed.
+    if: ${{ !cancelled() && needs.iterations.result == 'success' && needs.seed-deps.result != 'failure' }}
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJson(inputs.max_parallel) }}
@@ -215,7 +168,6 @@ jobs:
           develocity-url: ${{ env.DEVELOCITY_URL }}
           develocity-access-key: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
           image-names: ip-ac-sc-perf-${{ matrix.scenario }}
-          cache-read-only: true
           additional-cli-args: |
             --autodetect=GRADLE
 
