@@ -1,0 +1,44 @@
+name: Experiment — dependencies cache
+
+# Telltale "dependencies cache" mode: one seed job saves ~/.gradle/caches/modules-2
+# and ~/.gradle/wrapper/dists; iterations restore only those. See experiment-matrix.yml.
+# Find the scans with: tag:<experiment_id>_deps_cache_<no_cc|cc|ip>
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "Gradle task to execute"
+        required: true
+        default: "assembleDebug"
+      iterations:
+        description: "Measured builds per scenario"
+        required: true
+        default: "10"
+      max_parallel:
+        description: "Concurrent iterations"
+        required: true
+        default: "10"
+      experiment_id:
+        description: "Prefix of the variant tags; reuse it in the other dispatches to compare the two"
+        required: true
+        default: "exp1"
+      extra_args:
+        description: "Extra Gradle arguments"
+        required: false
+        default: ""
+
+run-name: "deps_cache · ${{ inputs.experiment_id }} · ${{ inputs.task }} · ${{ inputs.iterations }} iterations"
+
+jobs:
+  experiment:
+    uses: ./.github/workflows/experiment-matrix.yml
+    with:
+      mode: deps_cache
+      task: ${{ inputs.task }}
+      iterations: ${{ inputs.iterations }}
+      max_parallel: ${{ inputs.max_parallel }}
+      experiment_id: ${{ inputs.experiment_id }}
+      extra_args: ${{ inputs.extra_args }}
+    secrets:
+      DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}

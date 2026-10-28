@@ -1,8 +1,9 @@
 name: Experiment matrix
 
-# Reusable workflow called by the two dispatchers:
-#   experiment-ac-sc.yml     ac_sc = true   Develocity Artifact Cache + Setup Cache
-#   experiment-baseline.yml  ac_sc = false  control group, no cache step
+# Reusable workflow called by the three dispatchers:
+#   experiment-ac-sc.yml       mode = ac_sc       Develocity Artifact Cache + Setup Cache
+#   experiment-baseline.yml    mode = no_ac_sc    control group, no cache step
+#   experiment-deps-cache.yml  mode = deps_cache  Telltale-style: dependencies + wrapper only
 #
 # Modelled on cdsap/Telltale: every measured build is its own job on a fresh
 # runner, so nothing carries over between iterations. The matrix is
@@ -21,17 +22,24 @@ name: Experiment matrix
 # under a scenario-specific image name. Measured iterations restore it with
 # cache-read-only, so they never overwrite each other's entries.
 #
+# deps_cache variant only: like Telltale's "dependencies cache" mode, a single
+# seed job runs first and saves ~/.gradle/caches/modules-2 and
+# ~/.gradle/wrapper/dists to the GitHub Actions cache, keyed by run. Measured
+# iterations restore exactly those two paths and nothing else: no transforms,
+# no build cache, no Setup Cache content.
+#
 # Every measured scan is tagged:
-#   <experiment_id>_<ac_sc|no_ac_sc>_<scenario>   the variant, for BuildExperimentResults
+#   <experiment_id>_<mode>_<scenario>             the variant, for BuildExperimentResults
 #   <task>                                        the task, e.g. assembleDebug (seeds too)
 #   experiment, ip-ac-sc-perf, run_<run_id>       batch identification
-# and carries custom values scenario, iteration and ac_sc.
+# and carries custom values scenario, iteration, mode and ac_sc.
 
 on:
   workflow_call:
     inputs:
-      ac_sc:
-        type: boolean
+      mode:
+        description: "ac_sc | no_ac_sc | deps_cache"
+        type: string
         required: true
       task:
         type: string
@@ -55,7 +63,7 @@ on:
 
 env:
   DEVELOCITY_URL: https://ge.solutions-team.gradle.com
-  VARIANT: ${{ inputs.ac_sc && 'ac_sc' || 'no_ac_sc' }}
+  DEPS_CACHE_KEY: deps-wrapper-${{ github.run_id }}
 
 jobs:
   # Turns the iteration count into a JSON array the matrix can consume,
@@ -78,10 +86,15 @@ jobs:
           list=$(jq -nc --argjson n "$n" '[range(1; $n + 1) | tostring]')
           echo "generated $n iterations: $list"
           echo "iterations=$list" >> "$GITHUB_OUTPUT"
+      - run: |
+          case '${{ inputs.mode }}' in
+            ac_sc|no_ac_sc|deps_cache) ;;
+            *) echo "mode must be ac_sc, no_ac_sc or deps_cache, got '${{ inputs.mode }}'" >&2; exit 1 ;;
+          esac
 
   seed:
     name: "Seed ${{ matrix.scenario }}"
-    if: inputs.ac_sc
+    if: inputs.mode == 'ac_sc'
     strategy:
       fail-fast: false
       matrix:
@@ -126,11 +139,50 @@ jobs:
       - name: Drop configuration cache entry
         run: rm -rf .gradle/configuration-cache
 
+  seed-deps:
+    name: "Seed dependencies + wrapper"
+    if: inputs.mode == 'deps_cache'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '23'
+
+      - name: Build
+        run: |
+          task_tag=$(echo "${{ inputs.task }}" | xargs | tr " " "_")
+          ./gradlew ${{ inputs.task }} --no-configuration-cache -Dorg.gradle.unsafe.isolated-projects=false ${{ inputs.extra_args }} \
+            -Dscan.tag.seed \
+            -Dscan.tag.ip-ac-sc-perf \
+            -Dscan.tag.$task_tag \
+            -Dscan.tag.run_${{ github.run_id }} \
+            -Dscan.value.mode=deps_cache
+        env:
+          DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
+
+      # Release the file locks and drop the files Gradle rewrites on every
+      # build, so the saved dependency cache is clean.
+      - name: Stop Gradle
+        run: |
+          ./gradlew --stop
+          rm -f ~/.gradle/caches/modules-2/modules-2.lock ~/.gradle/caches/modules-2/gc.properties
+
+      - name: Save dependencies + wrapper
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/wrapper/dists
+          key: ${{ env.DEPS_CACHE_KEY }}
+
   experiment:
     name: "${{ matrix.scenario }} · iteration ${{ matrix.iteration }}"
-    needs: [iterations, seed]
-    # seed is skipped in the baseline variant; run anyway, but not if it failed.
-    if: ${{ !cancelled() && needs.iterations.result == 'success' && needs.seed.result != 'failure' }}
+    needs: [iterations, seed, seed-deps]
+    # At most one seed job runs per mode; run anyway, but not if it failed.
+    if: ${{ !cancelled() && needs.iterations.result == 'success' && needs.seed.result != 'failure' && needs.seed-deps.result != 'failure' }}
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJson(inputs.max_parallel) }}
@@ -146,8 +198,18 @@ jobs:
           distribution: temurin
           java-version: '23'
 
+      - name: Restore dependencies + wrapper
+        if: inputs.mode == 'deps_cache'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/wrapper/dists
+          key: ${{ env.DEPS_CACHE_KEY }}
+          fail-on-cache-miss: true
+
       - name: Develocity Artifact Cache + Setup Cache
-        if: inputs.ac_sc
+        if: inputs.mode == 'ac_sc'
         uses: gradle/develocity-artifact-cache-github-action@0d55463728b4cb8d76aab3399fcf261cf1fc4fe5 # v1.1.1
         with:
           develocity-url: ${{ env.DEVELOCITY_URL }}
@@ -170,13 +232,14 @@ jobs:
           esac
           task_tag=$(echo "${{ inputs.task }}" | xargs | tr " " "_")
           ./gradlew ${{ inputs.task }} $flags ${{ inputs.extra_args }} \
-            -Dscan.tag.${{ inputs.experiment_id }}_${{ env.VARIANT }}_${{ matrix.scenario }} \
+            -Dscan.tag.${{ inputs.experiment_id }}_${{ inputs.mode }}_${{ matrix.scenario }} \
             -Dscan.tag.experiment \
             -Dscan.tag.ip-ac-sc-perf \
             -Dscan.tag.$task_tag \
             -Dscan.tag.run_${{ github.run_id }} \
             -Dscan.value.scenario=${{ matrix.scenario }} \
             -Dscan.value.iteration=${{ matrix.iteration }} \
-            -Dscan.value.ac_sc=${{ inputs.ac_sc }}
+            -Dscan.value.mode=${{ inputs.mode }} \
+            -Dscan.value.ac_sc=${{ inputs.mode == 'ac_sc' }}
         env:
           DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}

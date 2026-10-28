@@ -33,7 +33,7 @@ jobs:
   experiment:
     uses: ./.github/workflows/experiment-matrix.yml
     with:
-      ac_sc: true
+      mode: ac_sc
       task: ${{ inputs.task }}
       iterations: ${{ inputs.iterations }}
       max_parallel: ${{ inputs.max_parallel }}
